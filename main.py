@@ -27,7 +27,7 @@ from fastmcp import FastMCP
 import database as db
 
 # ---------- persistence, initialized once at startup ----------
-db.init_db()
+#db.init_db()
 
 # ---------- Step 1: build the MCP server FIRST ----------
 # Hand-curated tools, calling the SAME database functions the REST API

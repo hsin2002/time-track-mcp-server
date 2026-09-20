@@ -16,9 +16,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+ 
 # ============================================================
 # DATABASE CONFIGURATION
 # ============================================================
+
+import os
+import threading
+import mysql.connector
+from mysql.connector import Error
+from dotenv import load_dotenv
+
+load_dotenv()
 
 DB_CONFIG = {
     "host": os.getenv("MYSQL_HOST", "myhq76.h.filess.io"),
@@ -26,7 +35,11 @@ DB_CONFIG = {
     "port": int(os.getenv("MYSQL_PORT", "3306")),
     "user": os.getenv("MYSQL_USER", "timetrack_ironplanet"),
     "password": os.getenv("MYSQL_PASSWORD", ""),
+    "connection_timeout": 10,
 }
+
+_db_initialized = False
+_db_init_lock = threading.Lock()
 
 
 # ============================================================
@@ -56,7 +69,130 @@ def get_connection():
 # INITIALIZE DATABASE
 # ============================================================
 
+
+
 def init_db():
+    """
+    Create the time_entries table if it does not exist.
+
+    This function is called lazily when the application
+    actually needs database access.
+    """
+
+    global _db_initialized
+
+    if _db_initialized:
+        return
+
+    conn = get_connection()
+
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS time_entries (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                employee_name VARCHAR(255) NOT NULL,
+                project VARCHAR(255) NOT NULL,
+                entry_date DATE NOT NULL,
+                hours DECIMAL(10,2) NOT NULL,
+                description TEXT NOT NULL
+            )
+        """)
+
+        conn.commit()
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM time_entries"
+        )
+
+        count = cursor.fetchone()[0]
+
+        if count == 0:
+
+            seed = [
+                (
+                    "Asha Patel",
+                    "Website Redesign",
+                    "2026-09-08",
+                    6.5,
+                    "Homepage layout",
+                ),
+                (
+                    "Asha Patel",
+                    "Website Redesign",
+                    "2026-09-09",
+                    7.0,
+                    "Mobile responsive fixes",
+                ),
+                (
+                    "Asha Patel",
+                    "Client Onboarding",
+                    "2026-09-10",
+                    3.0,
+                    "Kickoff call + notes",
+                ),
+                (
+                    "Rahul Mehta",
+                    "Website Redesign",
+                    "2026-09-08",
+                    5.5,
+                    "API integration",
+                ),
+                (
+                    "Rahul Mehta",
+                    "Internal Tools",
+                    "2026-09-09",
+                    8.0,
+                    "Dashboard bug fixes",
+                ),
+            ]
+
+            cursor.executemany(
+                """
+                INSERT INTO time_entries
+                (
+                    employee_name,
+                    project,
+                    entry_date,
+                    hours,
+                    description
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                seed,
+            )
+
+            conn.commit()
+
+        _db_initialized = True
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+
+
+def ensure_db_initialized():
+    global _db_initialized
+
+    if _db_initialized:
+        return
+
+    with _db_init_lock:
+
+        if _db_initialized:
+            return
+
+        init_db()
+
+        _db_initialized = True
+
+
+
+
+def init_db_old():
     """
     Create the time_entries table if it does not exist.
 
@@ -160,7 +296,7 @@ def _row_to_dict(row) -> dict:
     MySQL connector returns tuples by default, so the column
     positions are mapped manually.
     """
-
+     
     return {
         "id": row[0],
         "employee_name": row[1],
@@ -180,7 +316,7 @@ def _row_to_dict(row) -> dict:
 # ============================================================
 
 def list_all_entries() -> list[dict]:
-
+    ensure_db_initialized()
     conn = get_connection()
 
     try:
@@ -218,7 +354,7 @@ def log_time(
     hours: float,
     description: str = "",
 ) -> dict:
-
+    ensure_db_initialized()
     if hours <= 0:
         raise ValueError("hours must be a positive number")
 
@@ -290,6 +426,8 @@ def get_timesheet(
     end_date: str | None = None,
 ) -> list[dict]:
 
+    ensure_db_initialized()
+
     conn = get_connection()
 
     try:
@@ -335,7 +473,7 @@ def get_timesheet(
 # ============================================================
 
 def list_projects() -> list[str]:
-
+    ensure_db_initialized()
     conn = get_connection()
 
     try:
@@ -361,7 +499,7 @@ def list_projects() -> list[str]:
 # ============================================================
 
 def get_project_summary(project: str) -> dict:
-
+    ensure_db_initialized()
     conn = get_connection()
 
     try:
