@@ -1,122 +1,404 @@
 
 """
-TimeTrack's persistence layer -- SQLite, shared by the website and the MCP
-server, exactly like RecipeBox's was. One real, professional use case this
-time: logging billable hours against projects, and summarizing them.
+TimeTrack's persistence layer -- MySQL.
+
+Shared by:
+    1. FastAPI REST API
+    2. FastMCP server
+
+Both use these same database functions.
 """
-import sqlite3
-from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "timetrack.db"
+import os
+import mysql.connector
+from mysql.connector import Error
+from dotenv import load_dotenv
 
+load_dotenv()
+
+# ============================================================
+# DATABASE CONFIGURATION
+# ============================================================
+
+DB_CONFIG = {
+    "host": os.getenv("MYSQL_HOST", "myhq76.h.filess.io"),
+    "database": os.getenv("MYSQL_DATABASE", "timetrack_ironplanet"),
+    "port": int(os.getenv("MYSQL_PORT", "3306")),
+    "user": os.getenv("MYSQL_USER", "timetrack_ironplanet"),
+    "password": os.getenv("MYSQL_PASSWORD", ""),
+}
+
+
+# ============================================================
+# DATABASE CONNECTION
+# ============================================================
 
 def get_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """
+    Open a MySQL database connection.
+    """
 
+    try:
+        connection = mysql.connector.connect(**DB_CONFIG)
+
+        if not connection.is_connected():
+            raise RuntimeError("Could not connect to MySQL database.")
+
+        return connection
+
+    except Error as e:
+        raise RuntimeError(
+            f"Could not connect to MySQL database: {e}"
+        ) from e
+
+
+# ============================================================
+# INITIALIZE DATABASE
+# ============================================================
 
 def init_db():
-    conn = get_connection()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS time_entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            employee_name TEXT NOT NULL,
-            project TEXT NOT NULL,
-            entry_date TEXT NOT NULL,
-            hours REAL NOT NULL,
-            description TEXT NOT NULL DEFAULT ''
-        )
-    """)
-    count = conn.execute("SELECT COUNT(*) FROM time_entries").fetchone()[0]
-    if count == 0:
-        seed = [
-            ("Asha Patel", "Website Redesign", "2026-09-08", 6.5, "Homepage layout"),
-            ("Asha Patel", "Website Redesign", "2026-09-09", 7.0, "Mobile responsive fixes"),
-            ("Asha Patel", "Client Onboarding", "2026-09-10", 3.0, "Kickoff call + notes"),
-            ("Rahul Mehta", "Website Redesign", "2026-09-08", 5.5, "API integration"),
-            ("Rahul Mehta", "Internal Tools", "2026-09-09", 8.0, "Dashboard bug fixes"),
-        ]
-        conn.executemany(
-            "INSERT INTO time_entries (employee_name, project, entry_date, hours, description) "
-            "VALUES (?, ?, ?, ?, ?)",
-            seed,
-        )
-        conn.commit()
-    conn.close()
+    """
+    Create the time_entries table if it does not exist.
 
+    Also inserts sample data when the table is empty.
+    """
+
+    conn = get_connection()
+
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS time_entries (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                employee_name VARCHAR(255) NOT NULL,
+                project VARCHAR(255) NOT NULL,
+                entry_date DATE NOT NULL,
+                hours DECIMAL(10,2) NOT NULL,
+                description TEXT NOT NULL
+            )
+        """)
+
+        conn.commit()
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM time_entries"
+        )
+
+        count = cursor.fetchone()[0]
+
+        if count == 0:
+
+            seed = [
+                (
+                    "Asha Patel",
+                    "Website Redesign",
+                    "2026-09-08",
+                    6.5,
+                    "Homepage layout",
+                ),
+                (
+                    "Asha Patel",
+                    "Website Redesign",
+                    "2026-09-09",
+                    7.0,
+                    "Mobile responsive fixes",
+                ),
+                (
+                    "Asha Patel",
+                    "Client Onboarding",
+                    "2026-09-10",
+                    3.0,
+                    "Kickoff call + notes",
+                ),
+                (
+                    "Rahul Mehta",
+                    "Website Redesign",
+                    "2026-09-08",
+                    5.5,
+                    "API integration",
+                ),
+                (
+                    "Rahul Mehta",
+                    "Internal Tools",
+                    "2026-09-09",
+                    8.0,
+                    "Dashboard bug fixes",
+                ),
+            ]
+
+            cursor.executemany(
+                """
+                INSERT INTO time_entries
+                (
+                    employee_name,
+                    project,
+                    entry_date,
+                    hours,
+                    description
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                seed,
+            )
+
+            conn.commit()
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ============================================================
+# INTERNAL HELPER
+# ============================================================
 
 def _row_to_dict(row) -> dict:
+    """
+    Convert a MySQL row into a normal Python dictionary.
+
+    MySQL connector returns tuples by default, so the column
+    positions are mapped manually.
+    """
+
     return {
-        "id": row["id"],
-        "employee_name": row["employee_name"],
-        "project": row["project"],
-        "entry_date": row["entry_date"],
-        "hours": row["hours"],
-        "description": row["description"],
+        "id": row[0],
+        "employee_name": row[1],
+        "project": row[2],
+        "entry_date": (
+            row[3].isoformat()
+            if hasattr(row[3], "isoformat")
+            else str(row[3])
+        ),
+        "hours": float(row[4]),
+        "description": row[5],
     }
 
+
+# ============================================================
+# LIST ALL ENTRIES
+# ============================================================
 
 def list_all_entries() -> list[dict]:
+
     conn = get_connection()
-    rows = conn.execute("SELECT * FROM time_entries ORDER BY entry_date DESC, id DESC").fetchall()
-    conn.close()
-    return [_row_to_dict(r) for r in rows]
+
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT
+                id,
+                employee_name,
+                project,
+                entry_date,
+                hours,
+                description
+            FROM time_entries
+            ORDER BY entry_date DESC, id DESC
+        """)
+
+        rows = cursor.fetchall()
+
+        return [_row_to_dict(row) for row in rows]
+
+    finally:
+        cursor.close()
+        conn.close()
 
 
-def log_time(employee_name: str, project: str, entry_date: str, hours: float, description: str = "") -> dict:
+# ============================================================
+# LOG TIME
+# ============================================================
+
+def log_time(
+    employee_name: str,
+    project: str,
+    entry_date: str,
+    hours: float,
+    description: str = "",
+) -> dict:
+
     if hours <= 0:
         raise ValueError("hours must be a positive number")
+
     conn = get_connection()
-    cursor = conn.execute(
-        "INSERT INTO time_entries (employee_name, project, entry_date, hours, description) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (employee_name, project, entry_date, hours, description),
-    )
-    conn.commit()
-    new_id = cursor.lastrowid
-    row = conn.execute("SELECT * FROM time_entries WHERE id = ?", (new_id,)).fetchone()
-    conn.close()
-    return _row_to_dict(row)
+
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO time_entries
+            (
+                employee_name,
+                project,
+                entry_date,
+                hours,
+                description
+            )
+            VALUES (%s, %s, %s, %s, %s)
+            """,
+            (
+                employee_name,
+                project,
+                entry_date,
+                hours,
+                description,
+            ),
+        )
+
+        conn.commit()
+
+        new_id = cursor.lastrowid
+
+        cursor.execute(
+            """
+            SELECT
+                id,
+                employee_name,
+                project,
+                entry_date,
+                hours,
+                description
+            FROM time_entries
+            WHERE id = %s
+            """,
+            (new_id,),
+        )
+
+        row = cursor.fetchone()
+
+        return _row_to_dict(row)
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        cursor.close()
+        conn.close()
 
 
-def get_timesheet(employee_name: str, start_date: str | None = None, end_date: str | None = None) -> list[dict]:
+# ============================================================
+# GET TIMESHEET
+# ============================================================
+
+def get_timesheet(
+    employee_name: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict]:
+
     conn = get_connection()
-    query = "SELECT * FROM time_entries WHERE employee_name = ?"
-    params: list = [employee_name]
-    if start_date:
-        query += " AND entry_date >= ?"
-        params.append(start_date)
-    if end_date:
-        query += " AND entry_date <= ?"
-        params.append(end_date)
-    query += " ORDER BY entry_date"
-    rows = conn.execute(query, params).fetchall()
-    conn.close()
-    return [_row_to_dict(r) for r in rows]
 
+    try:
+        cursor = conn.cursor()
+
+        query = """
+            SELECT
+                id,
+                employee_name,
+                project,
+                entry_date,
+                hours,
+                description
+            FROM time_entries
+            WHERE employee_name = %s
+        """
+
+        params = [employee_name]
+
+        if start_date:
+            query += " AND entry_date >= %s"
+            params.append(start_date)
+
+        if end_date:
+            query += " AND entry_date <= %s"
+            params.append(end_date)
+
+        query += " ORDER BY entry_date"
+
+        cursor.execute(query, params)
+
+        rows = cursor.fetchall()
+
+        return [_row_to_dict(row) for row in rows]
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ============================================================
+# LIST PROJECTS
+# ============================================================
 
 def list_projects() -> list[str]:
-    conn = get_connection()
-    rows = conn.execute("SELECT DISTINCT project FROM time_entries ORDER BY project").fetchall()
-    conn.close()
-    return [r["project"] for r in rows]
 
+    conn = get_connection()
+
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT DISTINCT project
+            FROM time_entries
+            ORDER BY project
+        """)
+
+        rows = cursor.fetchall()
+
+        return [row[0] for row in rows]
+
+    finally:
+        cursor.close()
+        conn.close()
+
+
+# ============================================================
+# GET PROJECT SUMMARY
+# ============================================================
 
 def get_project_summary(project: str) -> dict:
+
     conn = get_connection()
-    rows = conn.execute(
-        "SELECT employee_name, SUM(hours) as total_hours FROM time_entries "
-        "WHERE project = ? GROUP BY employee_name ORDER BY employee_name",
-        (project,),
-    ).fetchall()
-    conn.close()
-    if not rows:
-        raise ValueError(f"No time logged against project '{project}'")
-    by_employee = {r["employee_name"]: r["total_hours"] for r in rows}
-    return {
-        "project": project,
-        "total_hours": sum(by_employee.values()),
-        "by_employee": by_employee,
-    }
+
+    try:
+        cursor = conn.cursor()
+
+        cursor.execute(
+            """
+            SELECT
+                employee_name,
+                SUM(hours) AS total_hours
+            FROM time_entries
+            WHERE project = %s
+            GROUP BY employee_name
+            ORDER BY employee_name
+            """,
+            (project,),
+        )
+
+        rows = cursor.fetchall()
+
+        if not rows:
+            raise ValueError(
+                f"No time logged against project '{project}'"
+            )
+
+        by_employee = {
+            row[0]: float(row[1])
+            for row in rows
+        }
+
+        return {
+            "project": project,
+            "total_hours": sum(by_employee.values()),
+            "by_employee": by_employee,
+        }
+
+    finally:
+        cursor.close()
+        conn.close()
 

@@ -21,7 +21,9 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from fastmcp import FastMCP
 
-import database as db
+# This project is not installed as a package; the module lives in the
+# project root, so import it directly from the current working directory.
+import database_sqlLite as db
 
 # ---------- persistence, initialized once at startup ----------
 db.init_db()
